@@ -1,8 +1,40 @@
-
 import streamlit as st
 from Bio import SeqIO
 from Bio.Seq import Seq
-from Bio.SeqUtils import GC, molecular_weight
+# Biopython's SeqUtils API has changed across versions; import defensively.
+try:
+    from Bio.SeqUtils import GC, molecular_weight
+except Exception:
+    # Fallback GC implementation: counts G and C among valid nucleotide letters.
+    def GC(seq):
+        seq_str = str(seq).upper()
+        g = seq_str.count('G')
+        c = seq_str.count('C')
+        # count only valid bases to avoid dividing by length including ambiguous chars
+        valid = sum(seq_str.count(x) for x in "ACGTU")
+        try:
+            return (g + c) / valid * 100 if valid else 0.0
+        except Exception:
+            return 0.0
+
+    # Try to use ProteinAnalysis for molecular weight; otherwise use a conservative fallback.
+    try:
+        from Bio.SeqUtils.ProtParam import ProteinAnalysis
+
+        def molecular_weight(protein_seq, monoisotopic=False):
+            try:
+                pa = ProteinAnalysis(str(protein_seq))
+                return pa.molecular_weight()
+            except Exception:
+                return None
+    except Exception:
+        def molecular_weight(protein_seq, monoisotopic=False):
+            # Very rough approximation: average 110 Da per amino acid
+            s = str(protein_seq)
+            if not s:
+                return 0.0
+            return len(s) * 110.0
+
 from Bio import pairwise2
 from Bio.pairwise2 import format_alignment
 import io
@@ -11,6 +43,8 @@ import matplotlib.pyplot as plt
 import base64
 import textwrap
 import traceback
+import zipfile, os
+from io import BytesIO
 
 st.set_page_config(page_title="Biopython Toolkit", layout="wide")
 
@@ -107,7 +141,7 @@ if show_revtrans:
             st.markdown("**Protein molecular weight (Da)**")
             try:
                 mw = molecular_weight(prot)
-                st.write(round(mw,3))
+                st.write(round(mw,3) if mw is not None else "Unavailable")
             except Exception:
                 st.write("Unable to compute molecular weight for translation.")
             if table:
@@ -239,7 +273,7 @@ if show_codon:
         seq_upper = seq.upper()
         gc_values = []
         positions = []
-        for i in range(0, max(1, len(seq_upper)-window+1), window//2):
+        for i in range(0, max(1, len(seq_upper)-window+1), max(1, window//2)):
             win = seq_upper[i:i+window]
             positions.append(i+1)
             gc_values.append(GC(win))
@@ -255,13 +289,15 @@ st.sidebar.markdown("Developed with Biopython & Streamlit. No external network c
 st.sidebar.markdown("You can download the full app package from the main menu (Developer export).")
 
 # Developer export - create a zip of app files for download
-import zipfile, os
-from io import BytesIO
 def make_zip_bytes(files):
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fpath, arcname in files:
-            zf.writestr(arcname, open(fpath, "rb").read())
+            try:
+                zf.writestr(arcname, open(fpath, "rb").read())
+            except Exception as e:
+                # include a small placeholder file indicating the missing file
+                zf.writestr(arcname, f"Failed to include {fpath}: {e}".encode('utf-8'))
     return buf.getvalue()
 
 if st.sidebar.button("Create app zip (for download)"):
